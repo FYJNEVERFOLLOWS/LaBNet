@@ -1,10 +1,11 @@
 import os
 import numpy as np
-import heapq
 import torch
 from pesq import pesq
 import soundfile as sf
 import librosa
+from itertools import permutations, product
+
 
 time_bins = 249
 batch = 4
@@ -189,6 +190,121 @@ def cal_si_snr_np(source, estimate_source):
 
     return round(float(si_snr[0]),4)
 
+def pow_p_norm(signal):
+    """Compute 2 Norm"""
+    return torch.pow(torch.norm(signal, p=2, dim=-1, keepdim=True), 2)
+
+def pow_norm(s1, s2):
+    return torch.sum(s1 * s2, dim=-1, keepdim=True)
+
+def remove_dc(signal):
+    """Normalized to zero mean"""
+    mean = torch.mean(signal, dim=-1, keepdim=True)
+    signal = signal - mean
+    return signal
+
+def si_sdr(estimated, original):
+    # estimated = remove_dc(estimated)
+    # original = remove_dc(original)
+    target = pow_norm(estimated, original) * original / (pow_p_norm(original) + EPS)
+    noise = estimated - target
+    sdr = 10 * torch.log10(pow_p_norm(target) / (pow_p_norm(noise) + EPS) + EPS)
+    return sdr.squeeze_(dim=-1)
+
+# Minimize negative SI-SDR
+def permute_si_sdr(est, src):
+    """ Caculate SI-SDR with PIT.
+    Args:
+        est: [batch_size, nspk, length]
+        src: [batch_size, nspk, length]
+    """
+    assert est.size() == src.size()
+    nspk = est.size(1)
+    # reshape source to [batch_size, 1, nspk, length]
+    src = torch.unsqueeze(src, dim=1)
+    # reshape estimation to [batch_size, nspk, 1, length]
+    est = torch.unsqueeze(est, dim=2)
+    pair_wise_sdr = si_sdr(est, src) # [batch_size, nspk, nspk]
+    # permutation, [nspk!, nspk]
+    perms = torch.tensor(list(permutations(range(nspk))), dtype=torch.long)
+    index = torch.unsqueeze(perms, dim=-1)
+    # one-hot, [nspk!, nspk, nspk]
+    perms_one_hot = torch.zeros((*perms.size(), nspk)).scatter_(-1, index, 1)
+    perms_one_hot = perms_one_hot.to(est.device)
+    # einsum([batch_size, nspk, nspk], [nspk!, nspk, nspk]) -> [batch_size, nspk!]
+    sdr_set = torch.einsum('bij,pij->bp', [pair_wise_sdr, perms_one_hot])
+    # max_sdr_idx = torch.argmax(sdr_set, dim=-1)
+    max_sdr, _ = torch.max(sdr_set, dim=-1)
+    avg_loss = 0.0 - torch.mean(max_sdr / nspk)
+    return avg_loss
+
+def assignment_si_sdr(est, ref):
+    """ Solve the assignment problem when computing SI-SDR.
+    Args:
+        est: [batch_size, est_num_sources=3, length]
+        ref: [batch_size, ref_num_sources=2, length]
+    """
+    ref_num_sources = ref.size(1)
+    est_num_sources = est.size(1)
+    losses = []
+    idxs = []
+    # This itertools call returns all possible assignments from estimates to
+    # references, E.g. itertools.product(range(2), repeat=3) produces:
+    # (0, 0, 0)
+    # (0, 0, 1)
+    # (0, 1, 0)
+    # (0, 1, 1)
+    # (1, 0, 0)
+    # (1, 0, 1)
+    # (1, 1, 0)
+    # (1, 1, 1)
+    for idx in product(range(ref_num_sources), repeat=est_num_sources):
+        # mix_matrix's shape: [1, ref_num_sources, est_num_sources]
+        mix_matrix = torch.unsqueeze(torch.nn.functional.one_hot(torch.tensor(idx), num_classes=ref_num_sources).transpose(1,0).float(), dim=0)
+        # estimate_mixed's shape: [batch, ref_num_sources, ...].
+        estimate_mixed = torch.matmul(mix_matrix, est)
+        # losses[0]: [batch, ref_num_sources]        
+        losses.append(torch.mean(si_sdr(estimate_mixed, ref), dim=1, keepdim=True))
+        idxs.append(idx)
+    loss_matrix = torch.cat(losses, dim=1)
+    # loss_matrix's shape: [batch, len(idxs)].
+    idx_argmin = torch.argmin(loss_matrix, dim=1)
+    idx_argmin = torch.unsqueeze(idx_argmin, 1)
+    # idx_argmin's shape: [batch, 1].
+
+    def th_gather_1d(x, indices):
+        x_gather = torch.index_select(x, 1, indices)
+        return x_gather
+    def th_gather_2d(param, indices):
+        # param: [batch, row_size, col_size]
+        # indices: [batch, 2]
+        # return: [batch, horizon]
+        indices = indices[:, 1]
+        return torch.stack([param[i, indices[i]] for i in range(indices.shape[0])], 0)
+
+    print(f'loss_matrix {loss_matrix.shape}')
+    print(f'loss_matrix {loss_matrix}')
+    print(f'A idx_argmin {idx_argmin.shape}')
+    print(f'A idx_argmin {idx_argmin}')
+    loss_best_mixture = torch.gather(loss_matrix, 1, idx_argmin).squeeze() # [B]
+    print(f'loss_best_mixture {loss_best_mixture.shape}')
+    print(f'loss_best_mixture {loss_best_mixture}')
+    # idxs_tf [len(idxs), est_num_sources]
+    idxs_tf = torch.cat([torch.unsqueeze(torch.tensor(idx), dim=0) for idx in idxs], dim=0)
+    idxs_tf = torch.unsqueeze(idxs_tf, 0).repeat(batch, 1, 1)
+    print(f'idxs_tf {idxs_tf.shape}')
+    # idxs_tf's shape: [batch, len(idxs), est_num_sources]. 
+    idx_argmin = torch.stack([idx_argmin for i in range(est_num_sources)], dim=-1)
+    print(f'B idx_argmin {idx_argmin.shape}')
+    print(f'B idx_argmin {idx_argmin}')
+    idxs_best = torch.gather(idxs_tf, 1, idx_argmin).squeeze()
+    # idxs_best is shape [batch, est_num_sources].
+    print(f'idxs_best {idxs_best.shape}')
+    mix_matrix = torch.nn.functional.one_hot(idxs_best, num_classes=ref_num_sources).to(torch.float32)
+    print(f'mix_matrix {mix_matrix.shape}')
+    # mix_matrix's shape [batch, ref_num_sources, est_num_sources].
+
+    return loss_best_mixture, mix_matrix
 
 def cal_pesq(source, estimate_source):
     """Calculate PESQ without PIT training.
@@ -212,6 +328,15 @@ def audioread(path, segment=64000, fs = 16000):
     if sr != fs:
         wave_data = librosa.resample(wave_data,sr,fs)
     return wave_data
+
+def loss_energy(x, eps=1e-8, fs=16000):
+    # [B, T]
+    """
+    Arguments:
+    x: estimated signal, [B, T] tensor
+    average by duration (seconds)
+    """
+    return torch.mean(10 * torch.log10(pow_p_norm(x) * fs / x.shape[-1] + eps))
 
 def split_spec_into_subbands(sig, freq_bound, win_size, hop_size, fs=16000):
     """

@@ -50,8 +50,8 @@ def get_ipd(spec, dim):
     sin_diff4 = torch.sin((phase[:, 4, :, :] - phase[:, 0, :, :])).unsqueeze(1)
     sin_diff5 = torch.sin((phase[:, 5, :, :] - phase[:, 0, :, :])).unsqueeze(1)
 
-    # result = torch.cat((diff1, diff2, diff3, diff4, diff5), dim=1)
-    result = torch.cat((diff1,diff2,diff3,diff4,diff5,sin_diff1,sin_diff2,sin_diff3,sin_diff4,sin_diff5), dim=1)
+    result = torch.cat((diff1, diff2, diff3, diff4, diff5), dim=1)
+    # result = torch.cat((diff1,diff2,diff3,diff4,diff5,sin_diff1,sin_diff2,sin_diff3,sin_diff4,sin_diff5), dim=1)
     #(batch, (m-1) pair microphones, freq bins:257, time_bins)
     return result
 
