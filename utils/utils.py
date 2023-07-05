@@ -33,6 +33,7 @@ def write_wav(fname, samps, fs=16000, normalize=True):
 
     # wham and whamr mixture and clean data are float 32, can not use scipy.io.wavfile to read and write int16
     # change to soundfile to read and write, although reference speech is int16, soundfile still can read and outputs as float
+    # soundfile also supports multi-channel files, given two-dimensional audio data (frames x channels)
     fdir = os.path.dirname(fname)
     if fdir and not os.path.exists(fdir):
         os.makedirs(fdir)

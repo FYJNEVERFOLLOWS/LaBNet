@@ -21,7 +21,7 @@ Official PyTorch implementation and dataset generation scripts of the Interspeec
 We implement LaBNet based on Generalized spatio-temporal RNN Beamformer (GRNN-BF), which directly learns the beamforming weights from the estimated speech and noise spatial covariance matrices. For more details, please refer to the original paper: ["Generalized Spatio-Temporal RNN Beamformer for Target Speech Separation"](https://www.isca-speech.org/archive/pdfs/interspeech_2021/xu21i_interspeech.pdf).
 
 The figure below shows the architecture of our proposed LaBNet.
-![](https://raw.githubusercontent.com/FYJNEVERFOLLOWS/Picture-Bed/main/202304/20230519220355.png)
+![](https://raw.githubusercontent.com/FYJNEVERFOLLOWS/Picture-Bed/main/202305/20230519220355.png)
 
 ## Dataset (Libri-SIM)
 The simulated dataset `Libri-SIM` is based on the [Librispeech](http://www.openslr.org/12) corpus.
